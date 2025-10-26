@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tanigawa Institute · ChatNR</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a}
+  .wrap{max-width:860px;margin:32px auto;padding:0 16px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  h1{font-size:22px;margin:0}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .dom{margin:18px 0}
+  .q{margin:10px 0;padding:12px;border:1px solid #e5e7eb;border-radius:10px}
+  .q p{margin:0 0 8px 0;font-weight:500}
+  .scale{display:flex;gap:10px;flex-wrap:wrap}
+  .opt{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer}
+  button{padding:12px 18px;border:0;border-radius:10px;background:#0f3b66;color:#fff;cursor:pointer}
+  button[disabled]{opacity:.6;cursor:not-allowed}
+  .err{color:#b91c1c;margin-top:10px}
+  .muted{color:#475569;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Diagnóstico Psicossocial · NR-01</h1>
+  </header>
+
+  <div id="app" class="card">Carregando…</div>
+</div>
+
+<script>
+const SUPA_URL = "tanigawainstitute.com.br";               
+const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlrbWt2Z3dsbmx4aXFldWNkdHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE0Mzk5MDgsImV4cCI6MjA3NzAxNTkwOH0.A4EtdeBxXUsg0xdc37yRDH5GEYFqZIQOOcqXq-F_ZVY";                   
+const HEADERS = {
+  "apikey": ANON_KEY,
+  "Authorization": "Bearer " + ANON_KEY,
+  "Content-Type": "application/json"
+};
+
+const $ = sel => document.querySelector(sel);
+
+async function rpc(fn, body){
+  const res = await fetch(`${SUPA_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify(body)
+  });
+  if(!res.ok){
+    const t = await res.text();
+    throw new Error(`RPC ${fn} falhou: ${res.status} ${t}`);
+  }
+  return res.json();
+}
+
+function getTokenFromURL(){
+  // aceita /?token=UUID ou /r/UUID (Vercel também pode usar caminho)
+  const u = new URL(window.location.href);
+  const queryToken = u.searchParams.get("token");
+  if(queryToken) return queryToken;
+  const parts = u.pathname.split("/").filter(Boolean);
+  return parts[parts.length-1] || "";
+}
+
+async function main(){
+  const app = $("#app");
+  const token = getTokenFromURL();
+  if(!token){
+    app.innerHTML = `<p class="err">Token ausente na URL. Acesse o link completo enviado pela empresa.</p>
+    <p class="muted">Exemplos válidos:<br>
+    • https://seu-site.vercel.app/?token=SEU_TOKEN<br>
+    • https://seu-site.vercel.app/r/SEU_TOKEN</p>`;
+    return;
+  }
+
+  let instr;
+  try{
+    instr = await rpc("get_instrument", { p_id: "CHATNR01", p_version: "2025.10.1" });
+  }catch(e){
+    app.innerHTML = `<p class="err">Erro ao carregar instrumento.</p>`;
+    console.error(e);
+    return;
+  }
+
+  const answers = {}; // { "D01Q01": 3, ... }
+  app.innerHTML = `
+    <div class="dom">
+      <label class="muted"><input type="checkbox" id="consent"> Li e concordo com o Termo de Consentimento (LGPD).</label>
+    </div>
+    <div id="doms"></div>
+    <button id="send">Enviar respostas</button>
+    <div id="msg" class="err"></div>
+  `;
+
+  const doms = $("#doms");
+  instr.domains.forEach(dom => {
+    const sec = document.createElement("section");
+    sec.className = "dom card";
+    sec.innerHTML = `<h3>${dom.id} — ${dom.name}</h3>`;
+    dom.items.forEach(it => {
+      const q = document.createElement("div");
+      q.className = "q";
+      q.innerHTML = `
+        <p>${it.text}</p>
+        <div class="scale">
+          ${[1,2,3,4,5].map(n => `
+            <label class="opt">
+              <input type="radio" name="${it.code}" value="${n}">
+              <span>${n}</span>
+            </label>
+          `).join("")}
+        </div>
+      `;
+      q.addEventListener("change", (ev)=>{
+        const v = Number(ev.target.value);
+        if(v>=1 && v<=5) answers[it.code] = v;
+      });
+      sec.appendChild(q);
+    });
+    doms.appendChild(sec);
+  });
+
+  $("#send").addEventListener("click", async ()=>{
+    const msg = $("#msg");
+    msg.textContent = "";
+    const consent = $("#consent").checked;
+    if(!consent){ msg.textContent = "Marque o consentimento (LGPD)."; return; }
+    const payload = Object.entries(answers).map(([code,value])=>({code, value}));
+    if(payload.length === 0){ msg.textContent = "Responda ao menos uma pergunta."; return; }
+
+    try{
+      $("#send").disabled = true;
+      const res = await rpc("submit_response", { p_token: token, p_answers: payload });
+      if(res === "OK"){
+        app.innerHTML = `<h2>Obrigado!</h2><p class="muted">Suas respostas foram registradas com sucesso.</p>`;
+      }else{
+        msg.textContent = res;
+        $("#send").disabled = false;
+      }
+    }catch(e){
+      msg.textContent = "Erro ao enviar. Tente novamente.";
+      console.error(e);
+      $("#send").disabled = false;
+    }
+  });
+}
+
+main();
+</script>
+</body>
+</html>
